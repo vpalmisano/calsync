@@ -16,6 +16,9 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #
+__author__ = u"Vittorio Palmisano  <vpalmisano at gmail dot com>"
+__description__ = u"Calendar Sync 1.0\nhttp://calsync.googlecode.com"
+
 import urllib
 import httplib
 import urlparse
@@ -109,7 +112,9 @@ def get_user_calendars(auth):
         calendars.append((title, link))
     return calendars
 
-def fetch_calendar_events(u, start=time.time()):
+def fetch_calendar_events(u, start=30, end=60):
+    start = time.time() - 60*60*24*start
+    end = time.time() + 60*60*24*end
     print 'Fetching calendar...'
     events = []
     curevent = []
@@ -143,9 +148,9 @@ def fetch_calendar_events(u, start=time.time()):
                 curevent[2] = line.replace('SUMMARY:', '')
         if line.startswith('END:VEVENT'):
             if curevent:
-                if curevent[0] >= start:
+                if curevent[0] >= start and curevent[0] <= end:
                     events.append(curevent)
-                    print ' collected:', curevent[2]
+                    #print ' collected:', curevent
                 else:
                     break
                 curevent = []
@@ -189,11 +194,13 @@ class CalSync:
         #    list_cb)
         #appuifw.app.body = self.listbox
         appuifw.app.menu = [
-            (u'Update calendar', self.update_calendar),
+            (u'Update from server', self.update_calendar),
             (u'Settings', (
                 (u'Account', self.edit_account),
                 (u'Calendars', self.get_calendars),
-                (u'Access point', self.choose_ap)
+                (u'Access point', self.choose_ap),
+                (u'Start date', self.choose_start_date),
+                (u'End date', self.choose_end_date),
             )),
             (u'About', self.show_about),
             (u'Exit', self.quit),
@@ -206,11 +213,11 @@ class CalSync:
         self.lock.wait()
 
     def show_about(self):
-        appuifw.note(u"Calendar Sync 1.0\nhttp://code.google.com/p/calsync/", "info")
+        appuifw.note(__description__, "info")
 
     def load_settings(self):
         self.settings = {'username': '', 'password': '', 'auth': '', 'ap': '',
-            'calendars': '', 'last_update': '', }
+            'calendars': '', 'last_update': '', 'start': '30', 'end': '60'}
         if not os.path.exists(CONFIG_FILE):
             return
         data = open(CONFIG_FILE, 'rb').read()
@@ -236,7 +243,7 @@ class CalSync:
         s = ''
         for k, v in self.settings.items():
             s += '%s=%s\n' %(k, str(v))
-        fp.write(unicode(s))
+        fp.write(unicode(s, 'utf8'))
         fp.close()
         self.set_ap()
         self.text.add(u'Settings saved\n')
@@ -249,6 +256,7 @@ class CalSync:
         ap = socket.select_access_point()
         for d in socket.access_points():
             if d['iapid'] == ap:
+                print 'setting ap:', d['name']
                 self.settings['ap'] = d['name']
                 break
         self.save_settings()
@@ -268,6 +276,18 @@ class CalSync:
             self.settings['auth'] = ''
         self.settings['password'] = password
         self.save_settings()
+
+    def choose_start_date(self):
+        start = appuifw.query(u'Days backward', 'number', int(self.settings['start']))
+        if start != int(self.settings['start']):
+            self.settings['start'] = unicode(start)    
+            self.save_settings()
+    
+    def choose_end_date(self):
+        end = appuifw.query(u'Days afterward', 'number', int(self.settings['end']))
+        if end != int(self.settings['end']):
+            self.settings['end'] = unicode(end)
+            self.save_settings()
 
     def autenticate(self):
         if not self.settings['username'] or not self.settings['password']:
@@ -305,37 +325,42 @@ class CalSync:
             return
         if not self.autenticate():
             return
-        events = []
         calendars = []
         for c in self.settings['calendars'].split('|'):
             items = c.split(':', 1)
             if len(items) == 2:
                 calendars.append(items)
+        c = calendar.open()
+        added = 0
+        # get events
         for title, calid in calendars:
             self.text.add(u'Opening calendar "%s"...\n' %title)
             u = get_google_calendar(self.settings['auth'], calid)
             self.text.add(u" fetching data...\n")
-            for e in fetch_calendar_events(u):
-                e.append(title)
-                events.append(e)
-        self.text.add(u' read %d events\n' %len(events))
-        c = calendar.open()
-        # add new events
-        added = 0
-        for event in events:
-            entries = c.find_instances(event[0], event[1], 
-                unicode(event[2]), appointments=1)
-            if not entries:
-                print 'Adding:', event[2], event[3]
-                e = c.add_appointment()
-                e.set_time(event[0], event[1])
-                e.content = unicode('(%s) %s' %(event[3], event[2]))
-                e.commit()
-                added += 1
+            start = int(self.settings['start'])
+            end = int(self.settings['end'])
+            for event in fetch_calendar_events(u, start, end):
+                #self.text.add(u' event: "%s"\n' %unicode(event[2], 'utf8'))
+                exist = False
+                for d in c.find_instances(event[0], event[1], appointments=1):
+                    entry = c[d['id']]
+                    if unicode(event[2], 'utf8') == entry.content:
+                        exist = True
+                        break
+                if not exist:
+                    self.text.add(u' adding: "%s"' %unicode(event[2], 'utf8'))
+                    e = c.add_appointment()
+                    e.set_time(event[0], event[1])
+                    e.content = unicode(event[2])
+                    e.commit()
+                    added += 1
         appuifw.note(u"Update done (%d added)" %added, "info")
         self.text.add(u'Update done (%d added)\n' %added)
         self.settings['last_update'] = str(time.time())
         self.save_settings()
 
 if __name__ == "__main__":
-    c = CalSync()
+    try:
+        c = CalSync()
+    except Exception, e:
+        print e
